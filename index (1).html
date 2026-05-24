@@ -1020,12 +1020,28 @@
     </div>
   </div>
 
-<script>
+<script type="module">
+// ── FIREBASE ─────────────────────────────────────────
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, collection, doc, onSnapshot, setDoc, deleteDoc, updateDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyC82uq9VPEHVq1gEUAVyf-ak6uEcgLCFks",
+  authDomain: "poke-encheres.firebaseapp.com",
+  projectId: "poke-encheres",
+  storageBucket: "poke-encheres.firebasestorage.app",
+  messagingSenderId: "1036041884453",
+  appId: "1:1036041884453:web:e82ff805738c4570f400cc"
+};
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+// ─────────────────────────────────────────────────────
+
 // ── CONFIG ──────────────────────────────────────────
-const SELLER_PASSWORD = '300913ethan!galand'; // ← CHANGE TON MOT DE PASSE ICI
+const SELLER_PASSWORD = 'pokemon'; // ← CHANGE TON MOT DE PASSE ICI
 // ────────────────────────────────────────────────────
 
-let cards = JSON.parse(localStorage.getItem('pk_cards') || '[]');
+let cards = [];
 let selDurVal = 3;
 let timers = {};
 let isSeller = false;
@@ -1042,7 +1058,12 @@ const rarityColors = {
   'EX / GX':'#e74c3c', 'V / VMAX':'#9b59b6', 'Full Art':'#1abc9c', 'Secret Rare':'#c0392b'
 };
 
-function save() { localStorage.setItem('pk_cards', JSON.stringify(cards)); }
+async function save() {
+  // Cards are saved individually to Firestore — see saveCard() / deleteCard()
+}
+async function saveCard(card) {
+  await setDoc(doc(db, 'cards', String(card.id)), card);
+}
 function fmt(n) { return Number(n).toLocaleString('fr-FR') + ' €'; }
 function fmtTime(s) {
   if (s <= 0) return 'Terminée';
@@ -1141,12 +1162,8 @@ function addCard() {
     remaining: selDurVal * 86400,
     createdAt: Date.now()
   };
-  cards.push(card);
-  save();
-  startTimer(card);
-  renderShop();
-  updateShopStats();
-  document.getElementById('count-badge').textContent = cards.length;
+  // Save to Firestore — onSnapshot will update cards[] automatically
+  saveCard(card);
 
   resetForm();
   const ok = document.getElementById('ok-msg');
@@ -1180,9 +1197,13 @@ function startTimer(card) {
       spTimer.textContent = fmtTime(card.remaining);
       spTimer.className = 'sp-timer' + (card.remaining < 3600 ? ' urgent' : '');
     }
-    save();
+    // Persist remaining time every 30s to Firestore (not every second to save quota)
+    if (card.remaining % 30 === 0) {
+      updateDoc(doc(db, 'cards', String(card.id)), { remaining: card.remaining }).catch(()=>{});
+    }
     if (card.remaining === 0) {
       clearInterval(timers[card.id]);
+      updateDoc(doc(db, 'cards', String(card.id)), { remaining: 0 }).catch(()=>{});
       if (typeof addActivity === 'function') addActivity('end', `🏁 Enchère terminée : <strong>${card.name}</strong> — ${fmt(card.currentBid)}`);
       renderShop();
       updateShopStats();
@@ -1281,11 +1302,8 @@ function renderManage() {
 
 function deleteCard(id) {
   if (!confirm('Retirer cette carte de la vente ?')) return;
-  cards = cards.filter(c => c.id !== id);
   if (timers[id]) clearInterval(timers[id]);
-  save();
-  renderManage();
-  renderShop();
+  deleteDoc(doc(db, 'cards', String(id))); // Firestore delete — onSnapshot handles the rest
 }
 
 function openBid(id) {
@@ -1322,7 +1340,7 @@ function placeBid(id) {
   if (!val || val < min) { input.style.borderColor = 'var(--red)'; return; }
   card.currentBid = val;
   card.bids++;
-  save();
+  updateDoc(doc(db, 'cards', String(id)), { currentBid: val, bids: card.bids });
   ['p-s-','p-m-'].forEach(pfx => { const e = document.getElementById(pfx+id); if(e) e.textContent = fmt(val); });
   const bs = document.getElementById('b-s-'+id); if(bs) bs.textContent = card.bids + ' mise' + (card.bids!==1?'s':'');
   updateShopStats();
@@ -1459,7 +1477,7 @@ function placeLiveBid(id) {
   if (!val || val < min) { input.style.borderColor = 'var(--red)'; setTimeout(() => input.style.borderColor='', 1000); return; }
   card.currentBid = val;
   card.bids++;
-  save();
+  updateDoc(doc(db, 'cards', String(id)), { currentBid: val, bids: card.bids });
 
   // Update spotlight price with flash
   const priceEl = document.getElementById('sp-price-' + id);
@@ -1495,9 +1513,22 @@ function addActivity(type, msg) {
 
 // ── END LIVE MODE ───────────────────────────────────────
 
-// Init
-startAllTimers();
-renderShop();
+// ── FIRESTORE REALTIME SYNC ──────────────────────────
+onSnapshot(collection(db, 'cards'), (snapshot) => {
+  // Stop all existing timers
+  Object.values(timers).forEach(t => clearInterval(t));
+  timers = {};
+  // Rebuild cards array from Firestore
+  cards = snapshot.docs.map(d => d.data());
+  startAllTimers();
+  renderShop();
+  if (document.getElementById('screen-live').classList.contains('active')) {
+    renderLive(); renderQueue();
+  }
+  if (isSeller) renderManage();
+  updateShopStats();
+});
+// ─────────────────────────────────────────────────────
 
   let payConfig = JSON.parse(localStorage.getItem('pk_pay') || '{}');
 
